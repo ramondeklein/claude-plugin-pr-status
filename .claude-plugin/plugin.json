@@ -1,0 +1,35 @@
+{
+  "name": "pr-status",
+  "version": "0.1.0",
+  "description": "Pane with the status of the PR this session works on: URL, reviewers, open review remarks, merge state, author/reviewer actions",
+  "author": {
+    "name": "Ramon de Klein"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "pollSeconds": {
+      "type": "number",
+      "title": "Poll interval (seconds)",
+      "description": "How often the PR status is refreshed from GitHub",
+      "default": 60
+    },
+    "reviewCommand": {
+      "type": "string",
+      "title": "Review-again prompt",
+      "description": "Sent when you press Review again (reviewer mode). A leading /name runs that slash command. {url} is the PR URL",
+      "default": "/review-pr {url}"
+    },
+    "addressPrompt": {
+      "type": "string",
+      "title": "Address-remarks prompt",
+      "description": "Sent when you press the open remarks count (author mode). {url}, {count}, {base}, {head}",
+      "default": "Address the {count} unresolved review threads on {url}. First check out {head}, fetch {base} from the remote the PR targets and merge it into {head} (no rebase), resolving any conflicts, so the fixes land on up-to-date code in the same push. Then, for each thread, fix the code when the remark is valid, otherwise explain why not, and reply to the thread."
+    },
+    "mergePrompt": {
+      "type": "string",
+      "title": "Merge-base prompt",
+      "description": "Sent when you press Behind/Conflicts (author mode). {url}, {base}, {head}",
+      "default": "Merge the latest {base} into {head} for {url}: check out {head}, fetch {base} from the remote the PR targets, merge it (no rebase), resolve any conflicts and check that it still builds."
+    }
+  }
+}

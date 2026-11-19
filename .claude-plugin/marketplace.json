@@ -1,0 +1,5 @@
+{
+  "name": "claude-plugin-pr-status",
+  "owner": { "name": "Ramon de Klein" },
+  "plugins": [{ "name": "pr-status", "source": "./" }]
+}
