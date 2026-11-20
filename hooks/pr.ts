@@ -8,6 +8,7 @@ import type {
   PrStatus,
   ReviewInfo,
   Reviewer,
+  WorkflowRun,
 } from '../types'
 
 export const QUERY = `query($owner:String!,$name:String!,$number:Int!){
@@ -15,13 +16,14 @@ export const QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       number url title state isDraft
+      mergedAt mergedBy{login} closedAt
       author{login}
       assignees(first:20){nodes{login}}
       headRefName baseRefName headRefOid
       mergeable
       reviewRequests(first:50){nodes{requestedReviewer{__typename ... on User{login} ... on Team{slug} ... on Bot{login} ... on Mannequin{login}}}}
       reviews(last:100){nodes{id author{__typename login} state submittedAt commit{oid}}}
-      reviewThreads(first:100){nodes{isResolved}}
+      reviewThreads(first:100){nodes{isResolved first: comments(first:1){nodes{author{login}}} last: comments(last:1){nodes{author{login}}}}}
       commits(last:100){nodes{commit{oid}}}
       head: commits(last:1){nodes{commit{statusCheckRollup{contexts(first:1){checkRunCountsByState{state count} statusContextCountsByState{state count}}}}}}
       timelineItems(last:100,itemTypes:[REVIEW_DISMISSED_EVENT]){nodes{... on ReviewDismissedEvent{previousReviewState review{id}}}}
@@ -46,6 +48,35 @@ export function findRef(text: string): PrRef | null {
   }
   return found?.ref ?? null
 }
+
+const SYSTEM_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/g
+
+/** How many of the conversation's opening lines may name the session's PR. */
+export const OPENING_LINES = 10
+
+/**
+ * The PR the conversation opened with: the first full PR URL in the first
+ * lines of its first user messages, system reminders left out. Those carry
+ * the task ("/maintain-pr <url>", "review <url>"), unlike PRs the agent looks
+ * at later on its own.
+ */
+export function openingRef(messages: readonly { role: string; text: string }[]): PrRef | null {
+  const opening = messages
+    .filter(m => m.role === 'user')
+    .map(m => m.text.replace(SYSTEM_REMINDER_RE, '').trim())
+    .filter(Boolean)
+    .slice(0, 3)
+  for (const text of opening) {
+    const lines = text.split('\n').filter(l => l.trim()).slice(0, OPENING_LINES).join('\n')
+    const m = new RegExp(URL_RE.source).exec(lines)
+    if (m) return { owner: m[1]!, repo: m[2]!, number: Number(m[3]) }
+  }
+  return null
+}
+
+/** True once the conversation has a user message to read the opening from. */
+export const hasOpening = (messages: readonly { role: string; text: string }[]) =>
+  messages.some(m => m.role === 'user' && m.text.replace(SYSTEM_REMINDER_RE, '').trim() !== '')
 
 const GH_PR_RE =
   /\bgh\s+pr\s+(?:view|checkout|diff|review|comment|edit|merge|checks|ready|update-branch)\b([^\n|;&]*)/g
@@ -89,6 +120,9 @@ export type GqlPr = {
   title: string
   state: string
   isDraft: boolean
+  mergedAt?: string | null
+  mergedBy?: { login: string } | null
+  closedAt?: string | null
   author: { login: string } | null
   assignees: { nodes: { login: string }[] }
   headRefName: string
@@ -101,7 +135,13 @@ export type GqlPr = {
     }[]
   }
   reviews: { nodes: GqlReview[] }
-  reviewThreads: { nodes: { isResolved: boolean }[] }
+  reviewThreads: {
+    nodes: {
+      isResolved: boolean
+      first?: { nodes: { author: { login: string } | null }[] }
+      last?: { nodes: { author: { login: string } | null }[] }
+    }[]
+  }
   commits: { nodes: { commit: { oid: string } }[] }
   head?: {
     nodes: {
@@ -202,11 +242,31 @@ export function checkCounts(pr: GqlPr): CheckCounts {
   return out
 }
 
+const RUN_FAILED = new Set(['failure', 'timed_out', 'cancelled', 'startup_failure', 'action_required'])
+
+/** `gh run list --json databaseId,workflowName,status,conclusion,url`: the failed and running runs. */
+export function parseRuns(json: string): WorkflowRun[] {
+  const list = JSON.parse(json) as {
+    databaseId: number
+    workflowName: string
+    status: string
+    conclusion: string
+    url: string
+  }[]
+  const out: WorkflowRun[] = []
+  for (const r of list) {
+    const state = r.status !== 'completed' ? 'pending' : RUN_FAILED.has(r.conclusion) ? 'failed' : null
+    if (state) out.push({ id: r.databaseId, name: r.workflowName, state, url: r.url })
+  }
+  return out.sort((a, b) => (a.state === b.state ? a.name.localeCompare(b.name) : a.state === 'failed' ? -1 : 1))
+}
+
 export function buildStatus(
   ref: PrRef,
   answer: GqlAnswer,
   behindBy: number | null,
   now: number,
+  runs: WorkflowRun[] = [],
 ): PrStatus {
   if (answer.errors?.length) throw new Error(answer.errors[0]?.message ?? 'GraphQL error')
   const pr = answer.data?.repository?.pullRequest
@@ -240,6 +300,20 @@ export function buildStatus(
     if (name) requested.set(name, { isTeam: rr.__typename === 'Team', isBot: rr.__typename === 'Bot' })
   }
 
+  // A thread is open while unresolved and someone other than the PR's side
+  // (its author, and the viewer in author mode) wrote its last comment.
+  const ours = new Set([author, ...(isAuthor ? [viewer] : [])])
+  const isOpen = (t: GqlPr['reviewThreads']['nodes'][number]) =>
+    !t.isResolved && !ours.has(t.last?.nodes[0]?.author?.login ?? '')
+  const openBy = new Map<string, number>()
+  let openThreads = 0
+  for (const t of pr.reviewThreads.nodes) {
+    if (!isOpen(t)) continue
+    openThreads++
+    const by = t.first?.nodes[0]?.author?.login
+    if (by) openBy.set(by, (openBy.get(by) ?? 0) + 1)
+  }
+
   const logins = [...new Set([...requested.keys(), ...byLogin.keys()])]
   const order: Record<string, number> = {
     'lost-approval': 0,
@@ -254,6 +328,7 @@ export function buildStatus(
       isBot: bots.has(login) || !!requested.get(login)?.isBot || login.endsWith('[bot]'),
       isTeam: !!requested.get(login)?.isTeam,
       isRequested: requested.has(login),
+      openThreads: openBy.get(login) ?? 0,
       ...reviewInfo(byLogin.get(login) ?? [], previous, commits),
     }))
     .sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || a.login.localeCompare(b.login))
@@ -267,6 +342,9 @@ export function buildStatus(
     url: pr.url,
     title: pr.title,
     state: pr.state,
+    mergedAt: pr.mergedAt ?? undefined,
+    mergedBy: pr.mergedBy?.login ?? undefined,
+    closedAt: pr.closedAt ?? undefined,
     isDraft: pr.isDraft,
     viewer,
     author,
@@ -274,10 +352,11 @@ export function buildStatus(
     headRef: pr.headRefName,
     baseRef: pr.baseRefName,
     reviewers,
-    openThreads: pr.reviewThreads.nodes.filter(t => !t.isResolved).length,
+    openThreads,
     merge,
     behindBy,
     checks: checkCounts(pr),
+    runs,
     me: reviewInfo(byLogin.get(viewer) ?? [], previous, commits),
     fetchedAt: now,
   }

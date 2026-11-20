@@ -1,7 +1,7 @@
 {
   "name": "pr-status",
-  "version": "0.1.0",
-  "description": "Pane with the status of the PR this session works on: URL, reviewers, open review remarks, merge state, author/reviewer actions",
+  "version": "0.2.0",
+  "description": "Pane with the status of the PR this session works on (reviewers, open remarks, merge state, CI, merged/closed) and the session's context and cost, with author/reviewer actions",
   "author": {
     "name": "Ramon de Klein"
   },
@@ -22,14 +22,32 @@
     "addressPrompt": {
       "type": "string",
       "title": "Address-remarks prompt",
-      "description": "Sent when you press the open remarks count (author mode). {url}, {count}, {base}, {head}",
-      "default": "Address the {count} unresolved review threads on {url}. First check out {head}, fetch {base} from the remote the PR targets and merge it into {head} (no rebase), resolving any conflicts, so the fixes land on up-to-date code in the same push. Then, for each thread, fix the code when the remark is valid, otherwise explain why not, and reply to the thread."
+      "description": "The task of the subagent that addresses review remarks when you press the open remarks count (author mode). It starts in a fresh context with only this text. {url}, {count}, {base}, {head}",
+      "default": "Address the {count} unresolved review threads on {url} that await our reply. You start without the conversation that led here, so read the PR and those threads with gh first. Check out {head}; it already contains the latest {base}, so do not merge it again. Fix the code for each remark that is valid, commit, and push {head} to the PR's branch. After the push, reply to every one of those threads, also the ones you fixed (naming the commit), and explain where you did not change the code, so ours is each thread's last comment. End with one line saying how many threads you fixed and how many you answered without a change."
+    },
+    "addressModel": {
+      "type": "string",
+      "title": "Address model",
+      "description": "The model of the subagent that addresses review remarks; empty for the session's model",
+      "default": ""
     },
     "mergePrompt": {
       "type": "string",
       "title": "Merge-base prompt",
-      "description": "Sent when you press Behind/Conflicts (author mode). {url}, {base}, {head}",
-      "default": "Merge the latest {base} into {head} for {url}: check out {head}, fetch {base} from the remote the PR targets, merge it (no rebase), resolve any conflicts and check that it still builds."
+      "description": "Given to the merge subagent when you press Behind/Conflicts (author mode). {url}, {base}, {head}",
+      "default": "Merge the latest {base} into {head} for {url}: check out {head}, fetch {base} from the remote the PR targets, merge it (no rebase), resolve any conflicts and check that it still builds. Commit the merge but do not push. End with one line saying what you merged and which conflicts you resolved."
+    },
+    "mergeModel": {
+      "type": "string",
+      "title": "Merge model",
+      "description": "The model of the subagent that merges the base branch and resolves conflicts (an alias such as sonnet or haiku, or a model id)",
+      "default": "sonnet"
+    },
+    "cacheTtlMinutes": {
+      "type": "number",
+      "title": "Prompt cache lifetime (minutes)",
+      "description": "How long the prompt cache lives while the session is idle (60 for the 1-hour cache, 5 for the 5-minute one); the Session section warns before it expires",
+      "default": 60
     }
   }
 }
