@@ -196,11 +196,74 @@ async function fetchStatus($: EngineInterface, ref: PrRef): Promise<PrStatus> {
 
 let openingRead = false
 
+// ---- keeping the PR across a /clear ------------------------------------------
+
+/**
+ * The PR the pane followed when the conversation was cleared. A /clear goes on
+ * under a new session id whose state starts empty, while this module lives
+ * on; the fresh conversation takes the PR over instead of reading its own
+ * opening, so the pane keeps pointing at it.
+ */
+let carried: { target: PrTarget; origin: PrRef | null } | null = null
+
+async function keepAcrossClear($: EngineInterface) {
+  const t = await read($, target)
+  if (t) carried = { target: t, origin: await read($, origin) }
+}
+
+async function restoreCarried($: EngineInterface) {
+  const c = carried
+  if (!c) return
+  carried = null
+  openingRead = true
+  if (await read($, target)) return
+  await update($, target, () => c.target)
+  if (c.origin) {
+    const o = c.origin
+    await update($, origin, () => o)
+  }
+}
+
+// A clear drops the conversation, so it takes a second press within this time.
+const CLEAR_CONFIRM_MS = 5000
+let clearArmedUntil = 0
+
+async function pressClear($: EngineInterface) {
+  const now = await $.clock.now()
+  if (now > clearArmedUntil) {
+    clearArmedUntil = now + CLEAR_CONFIRM_MS
+    $.ui.invalidate('ui.render')
+    // Back to "clear" once the time to confirm has passed.
+    void $.clock.sleep(CLEAR_CONFIRM_MS).then(() => $.ui.invalidate('ui.render')).catch(() => undefined)
+    return
+  }
+  clearArmedUntil = 0
+  await keepAcrossClear($)
+  try {
+    await $.command.run({ command: 'clear' })
+  } catch (err) {
+    carried = null
+    $.ui.toast(`Could not clear: ${err instanceof Error ? err.message : err}`)
+    return
+  }
+  await refresh($)
+}
+
+async function pressCompact($: EngineInterface) {
+  try {
+    await $.command.run({ command: 'compact' })
+  } catch (err) {
+    $.ui.toast(`Could not compact: ${err instanceof Error ? err.message : err}`)
+  }
+  void refresh($)
+}
+
 /**
  * Reads the PR the conversation opened with, once there is an opening, and
  * follows it unless a stronger source holds the pane.
  */
 async function readOpening($: EngineInterface) {
+  await restoreCarried($)
   if (openingRead) return
   let ref = await read($, origin)
   if (ref === null) {
@@ -483,6 +546,23 @@ async function spawnAddress($: EngineInterface, task: { prompt: string; count: n
   }
 }
 
+/**
+ * Opens a URL in the default browser of the machine the session runs on:
+ * `open` on macOS, `xdg-open` elsewhere. Only http(s) URLs.
+ */
+async function openUrl($: EngineInterface, url: string) {
+  if (!/^https?:\/\//.test(url)) return
+  for (const opener of ['open', 'xdg-open']) {
+    try {
+      const out = await $.process.run([opener, url], { timeoutMs: 10_000 })
+      if (out.exitCode === 0) return
+    } catch {
+      // try the next opener
+    }
+  }
+  $.ui.toast(`Could not open ${url}`)
+}
+
 /** Runs a prompt or, for a leading `/name`, that slash command. */
 async function send($: EngineInterface, text: string) {
   const m = /^\/([\w:.-]+)\s*([\s\S]*)$/.exec(text.trim())
@@ -626,6 +706,12 @@ export const register: Register = (on, rawOptions) => {
     return ran
   }).catch(($, e, next) => next(e))
 
+  // A /clear the person types keeps the PR as the button's does.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') await keepAcrossClear($).catch(() => undefined)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) void turnStarted($)
     return next(e)
@@ -660,7 +746,15 @@ export const register: Register = (on, rawOptions) => {
   // ---- drawing ---------------------------------------------------------------
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+
+    // A URL is a Button, so it takes focus (Tab) and Enter or a click opens it
+    // in the default browser; a terminal hyperlink can do neither.
+    const urlButton = (key: string, href: string) => (
+      <Button key={key} plain onPress={() => openUrl($, href)}>
+        <Text color="suggestion" underline>{href}</Text>
+      </Button>
+    )
     const t = await read($, target)
     const s = await read($, status)
     const err = await read($, error)
@@ -670,6 +764,7 @@ export const register: Register = (on, rawOptions) => {
     const info = await read($, session)
     const ver = pluginVersion
     const now = await $.clock.now()
+    const clearArmed = now <= clearArmedUntil
 
     // ---- which commit of this plugin runs, and whether it is the newest ----
     const versionLine = (() => {
@@ -701,7 +796,19 @@ export const register: Register = (on, rawOptions) => {
       const tipColor = { error: 'error', warning: 'warning', info: undefined } as const
       return (
         <Box key="session" flexDirection="column" marginTop={1}>
-          <Text weight="bold">Session</Text>
+          <Box>
+            <Text weight="bold">Session </Text>
+            <Button key="compact" plain onPress={() => pressCompact($)}>
+              <Text dimColor underline>compact</Text>
+            </Button>
+            <Text dimColor> </Text>
+            <Button key="clear" plain onPress={() => pressClear($)}>
+              {clearArmed
+                ? <Text color="warning" underline>press again to clear</Text>
+                : <Text dimColor underline>clear</Text>}
+            </Button>
+            <Text dimColor> (keeps PR #{t?.ref.number ?? '-'})</Text>
+          </Box>
           <Text>
             {'  '}Context{' '}
             <Text color={contextColor(info.tokens)}>
@@ -726,11 +833,6 @@ export const register: Register = (on, rawOptions) => {
               <Text color={tipColor[tip.level]} dimColor={tip.level === 'info'} wrap="wrap">
                 {'  '}{tip.level === 'info' ? '-' : '!'} {tip.text}
               </Text>
-              {tip.action === 'compact' && (
-                <Button key="compact" plain onPress={() => void $.session.compact().catch(() => undefined)}>
-                  <Text underline> compact</Text>
-                </Button>
-              )}
             </Box>
           ))}
         </Box>
@@ -901,7 +1003,7 @@ export const register: Register = (on, rawOptions) => {
         </Text>
         <Box>
           <Text>{'    '}</Text>
-          <Link href={r.url} />
+          {urlButton(`url-run-${r.id}`, r.url)}
         </Box>
       </Box>
     ))
@@ -909,7 +1011,7 @@ export const register: Register = (on, rawOptions) => {
       s.runs.length === 0 && checkParts.length > 0 ? (
         <Box>
           <Text>{'  '}</Text>
-          <Link href={`${s.url}/checks`} />
+          {urlButton('url-checks', `${s.url}/checks`)}
         </Box>
       ) : null
 
@@ -983,7 +1085,7 @@ export const register: Register = (on, rawOptions) => {
           </Box>
           {closedBanner}
           <Text> </Text>
-          <Link href={s.url} />
+          {urlButton('url-pr', s.url)}
           {sessionSection}
           <Text> </Text>
           {footer}
@@ -998,7 +1100,7 @@ export const register: Register = (on, rawOptions) => {
           <Text>{s.title}</Text>
         </Box>
         <Text> </Text>
-        <Link href={s.url} />
+        {urlButton('url-pr', s.url)}
         <Text> </Text>
         <Text dimColor>
           {s.mode} mode ({s.viewer}){s.isDraft ? ', draft' : ''}

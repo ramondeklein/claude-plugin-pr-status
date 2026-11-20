@@ -108,12 +108,20 @@ type Seen = {
   latest?: string
   /** Commits the head is behind its base. */
   behind?: number
+  /** No macOS `open` on this machine. */
+  noOpen?: boolean
+  /** Built-in slash commands the plugin ran. */
+  commands?: string[]
 }
 
 function engine(on: any, viewer: string, calls: string[][], seen: Seen = {}) {
   let paneTitle: string | undefined
   on('command.register', () => ({ value: { command: 'pr-status' } }))
   on('command.list', () => ({ value: [] }))
+  on('command.run', (_: unknown, e: { command: string }) => {
+    seen.commands?.push(e.command)
+    return { value: { text: '' } }
+  })
   on('ui.open', (_: unknown, e: { id: string; title?: string }) => {
     paneTitle = e.title ?? e.id
     seen.titles?.push(paneTitle)
@@ -154,6 +162,9 @@ function engine(on: any, viewer: string, calls: string[][], seen: Seen = {}) {
     const ok = (stdout: string) => ({
       value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     })
+    if (e.argv[0] === 'open' && seen.noOpen) {
+      return { value: { exitCode: 127, stdout: '', stderr: 'not found', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     if (e.argv[0] === 'git') {
       const g = e.argv.slice(3).join(' ')
       if (g === 'rev-parse HEAD') return ok((seen.commit ?? 'abc1234aaaaaaaa') + '\n')
@@ -262,6 +273,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: /into main by erin/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /15m ago/ })).toBeTruthy()
     expect(titles.at(-1)).toBe('PR #7 - MERGED')
+    expect(await ui.find({ key: 'url-pr' })).toBeTruthy()
     // nothing to merge, re-run, address or review on a merged PR
     expect(await ui.find({ key: 'merge-base' })).toBeFalsy()
     expect(await ui.find({ key: 'rerun-failed' })).toBeFalsy()
@@ -292,7 +304,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: /open review remark/ })).toBeFalsy()
     expect(await ui.find({ type: 'Text', text: /mode \(/ })).toBeFalsy()
     // what is left: the banner, the session and the refresh button
-    expect(await ui.find({ type: 'Text', text: /^Session$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^Session $/ })).toBeTruthy()
     expect(await ui.find({ key: 'refresh' })).toBeTruthy()
     await ui.unmount()
   })
@@ -452,6 +464,59 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'address' })
     expect(spawned.map(a => a.description)).toEqual(['Address 2 review remarks'])
     expect(String(spawned[0]?.prompt)).not.toContain('Only address the threads that')
+    await ui.unmount()
+  })
+  test(`URLs on ${surface}: a press or Enter opens them in the browser`, async ($, on) => {
+    const calls: string[][] = []
+    engine(on, 'alice', calls)
+    await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+    await $.command.run({ command: 'pr-status', args: 'refresh' })
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'url-pr' })
+    expect(calls).toContainEqual(['open', 'https://github.com/acme/widgets/pull/7'])
+    await ui.press({ key: 'url-run-11' })
+    expect(calls).toContainEqual(['open', 'https://github.com/acme/widgets/actions/runs/11'])
+    await ui.unmount()
+  })
+
+  test(`URLs on ${surface}: xdg-open where there is no open`, async ($, on) => {
+    const calls: string[][] = []
+    engine(on, 'alice', calls, { noOpen: true })
+    await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+    await $.command.run({ command: 'pr-status', args: 'refresh' })
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'url-pr' })
+    expect(calls).toContainEqual(['xdg-open', 'https://github.com/acme/widgets/pull/7'])
+    await ui.unmount()
+  })
+  test(`compact and clear on ${surface}: the pane keeps its PR`, async ($, on) => {
+    const calls: string[][] = []
+    const commands: string[] = []
+    const seen = {
+      commands,
+      branch: 'https://github.com/acme/widgets/pull/8',
+      messages: [{ role: 'user' as const, text: '/maintain-pr https://github.com/acme/widgets/pull/7', toolUses: [] as [] }],
+    }
+    engine(on, 'alice', calls, seen)
+    const graphqlNumber = () => calls.filter(c => c[2] === 'graphql').at(-1)?.find(a => a.startsWith('number='))
+    await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+    await $.command.run({ command: 'pr-status', args: 'refresh' })
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /keeps PR #7/ })).toBeTruthy()
+
+    await ui.press({ key: 'compact' })
+    expect(commands).toEqual(['compact'])
+
+    // the first press only asks to confirm
+    await ui.press({ key: 'clear' })
+    expect(commands).toEqual(['compact'])
+    expect(await ui.find({ type: 'Text', text: /press again to clear/ })).toBeTruthy()
+    // the new conversation opens with another PR; the pane stays on #7
+    seen.messages = [{ role: 'user', text: 'look at https://github.com/acme/widgets/pull/5', toolUses: [] }]
+    await ui.press({ key: 'clear' })
+    expect(commands).toEqual(['compact', 'clear'])
+    await $.command.run({ command: 'pr-status', args: 'refresh' })
+    expect(graphqlNumber()).toBe('number=7')
     await ui.unmount()
   })
 }

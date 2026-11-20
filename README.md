@@ -5,7 +5,10 @@ GitHub pull request the session is working on.
 
 ## What it shows
 
-- The PR's title and URL (click to open), its head and base branch.
+- The PR's title and URL, its head and base branch. Every URL in the pane
+  (the PR, its workflow runs, its Checks page) can be clicked, or reached
+  with Tab and opened with Enter; it opens in the default browser of the
+  machine the session runs on (`open` on macOS, `xdg-open` elsewhere).
 - Every reviewer with a status: not reviewed, commented, changes requested,
   approved or lost approval (a dismissed approval), and the number of open
   review threads they started. In author mode, each reviewer also
@@ -38,13 +41,19 @@ Under the PR, the **Session** section shows:
   turn's input came from the prompt cache, and how long the session has been
   idle against the cache's lifetime.
 
+Beside its title, **compact** runs `/compact` and **clear** runs `/clear`
+(press it twice within 5 seconds, as it drops the conversation). Both keep the
+pane on the same PR: after a clear, the fresh conversation takes over the PR
+the pane followed instead of reading its own opening, and a `/clear` you type
+does the same.
+
 Below these figures it gives tips when they apply, based on what drives
 Claude Code spend:
 
 - **Context over 200k.** Every turn reads the whole context again, so a turn
   at 300k costs about three times as much as one at 100k. Finish the task and
-  start the next one in a fresh session, or click **compact**. A warning
-  shows from 150k.
+  start the next one fresh with **clear**, or **compact**. A warning shows
+  from 150k.
 - **Cache about to expire, or expired.** After the cache lifetime (60
   minutes by default) of idle time, the next prompt writes the whole context
   to the cache again, at twice the input price. After a long wait, a fresh

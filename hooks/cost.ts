@@ -49,7 +49,7 @@ export function costTips(s: PaneSession, now: number, cacheTtlMinutes: number): 
   if (tokens >= LARGE_CONTEXT) {
     tips.push({
       level: 'error',
-      text: `Context is ${kTokens(tokens)}, over 200k: every turn re-reads all of it. Finish this task and start the next one in a fresh session (or /clear), or compact now.`,
+      text: `Context is ${kTokens(tokens)}, over 200k: every turn re-reads all of it. Finish this task and start the next one fresh (clear above, which keeps the PR), or compact.`,
       action: 'compact',
     })
   } else if (tokens >= GROWING_CONTEXT) {
