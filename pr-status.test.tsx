@@ -498,11 +498,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
       messages: [{ role: 'user' as const, text: '/maintain-pr https://github.com/acme/widgets/pull/7', toolUses: [] as [] }],
     }
     engine(on, 'alice', calls, seen)
+    // the engine's own context: no blocks of its own here
+    on('prompt.context', ($, e) => ({ blocks: e.blocks }))
     const graphqlNumber = () => calls.filter(c => c[2] === 'graphql').at(-1)?.find(a => a.startsWith('number='))
     await $.session.start({ cwd: '/repo', surface, isInteractive: true })
     await $.command.run({ command: 'pr-status', args: 'refresh' })
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /keeps PR #7/ })).toBeTruthy()
+    const prBlock = async () => (await $.prompt.context({ blocks: [] })).blocks.find(b => b.name === 'pr-status')
+    expect(await prBlock()).toBe(undefined)
 
     await ui.press({ key: 'compact' })
     expect(commands).toEqual(['compact'])
@@ -515,6 +519,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     seen.messages = [{ role: 'user', text: 'look at https://github.com/acme/widgets/pull/5', toolUses: [] }]
     await ui.press({ key: 'clear' })
     expect(commands).toEqual(['compact', 'clear'])
+    // the fresh conversation is told which PR it works on
+    expect((await prBlock())?.text).toBe('Context of this agent is https://github.com/acme/widgets/pull/7')
     await $.command.run({ command: 'pr-status', args: 'refresh' })
     expect(graphqlNumber()).toBe('number=7')
     await ui.unmount()

@@ -206,9 +206,18 @@ let openingRead = false
  */
 let carried: { target: PrTarget; origin: PrRef | null } | null = null
 
+/**
+ * The URL of the PR the pane followed at the last clear. The fresh
+ * conversation's context opens with "Context of this agent is <url>", and
+ * keeps it through a compaction, until the next clear.
+ */
+let clearedUrl: string | null = null
+
 async function keepAcrossClear($: EngineInterface) {
   const t = await read($, target)
-  if (t) carried = { target: t, origin: await read($, origin) }
+  if (!t) return
+  carried = { target: t, origin: await read($, origin) }
+  clearedUrl = `https://github.com/${t.ref.owner}/${t.ref.repo}/pull/${t.ref.number}`
 }
 
 async function restoreCarried($: EngineInterface) {
@@ -243,6 +252,7 @@ async function pressClear($: EngineInterface) {
     await $.command.run({ command: 'clear' })
   } catch (err) {
     carried = null
+    clearedUrl = null
     $.ui.toast(`Could not clear: ${err instanceof Error ? err.message : err}`)
     return
   }
@@ -710,6 +720,13 @@ export const register: Register = (on, rawOptions) => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') await keepAcrossClear($).catch(() => undefined)
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // After a clear, the fresh conversation is told which PR it works on.
+  on('prompt.context', async ($, e, next) => {
+    if (!clearedUrl) return next(e)
+    const block = { name: 'pr-status', text: `Context of this agent is ${clearedUrl}` }
+    return next({ ...e, blocks: [...e.blocks.filter(b => b.name !== block.name), block] })
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
