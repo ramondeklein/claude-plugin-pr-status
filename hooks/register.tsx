@@ -207,17 +207,34 @@ let openingRead = false
 let carried: { target: PrTarget; origin: PrRef | null } | null = null
 
 /**
- * The URL of the PR the pane followed at the last clear. The fresh
- * conversation's context opens with "Context of this agent is <url>", and
- * keeps it through a compaction, until the next clear.
+ * What the fresh conversation is told after a clear: "Context of this agent
+ * is <url>" of the PR the pane followed. Sent once, at the first prompt
+ * after the clear (or right after the clear button's).
  */
-let clearedUrl: string | null = null
+let clearNote: string | null = null
 
 async function keepAcrossClear($: EngineInterface) {
   const t = await read($, target)
   if (!t) return
   carried = { target: t, origin: await read($, origin) }
-  clearedUrl = `https://github.com/${t.ref.owner}/${t.ref.repo}/pull/${t.ref.number}`
+  clearNote = `Context of this agent is https://github.com/${t.ref.owner}/${t.ref.repo}/pull/${t.ref.number}`
+}
+
+/**
+ * Hands the clear note to the model: a row that waits for the next request
+ * of the main conversation, so a local command after the clear does not use
+ * it up. Answers the note when the row was refused, null otherwise.
+ */
+async function sendClearNote($: EngineInterface): Promise<string | null> {
+  const text = clearNote
+  if (!text) return null
+  clearNote = null
+  try {
+    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    return r.deny ? text : null
+  } catch {
+    return text
+  }
 }
 
 async function restoreCarried($: EngineInterface) {
@@ -252,10 +269,11 @@ async function pressClear($: EngineInterface) {
     await $.command.run({ command: 'clear' })
   } catch (err) {
     carried = null
-    clearedUrl = null
+    clearNote = null
     $.ui.toast(`Could not clear: ${err instanceof Error ? err.message : err}`)
     return
   }
+  clearNote = await sendClearNote($)
   await refresh($)
 }
 
@@ -688,6 +706,12 @@ export const register: Register = (on, rawOptions) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    // After a clear, the fresh conversation is told which PR it works on;
+    // where the row is refused, the prompt carries it instead.
+    if (clearNote && e.command?.name !== 'clear') {
+      const note = await sendClearNote($)
+      if (note) e = { ...e, context: [...(e.context ?? []), note] }
+    }
     // The first prompt is the conversation's opening; later ones only name a PR.
     void (async () => {
       await readOpening($)
@@ -720,13 +744,6 @@ export const register: Register = (on, rawOptions) => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') await keepAcrossClear($).catch(() => undefined)
     return next(e)
-  }).catch(($, e, next) => next(e))
-
-  // After a clear, the fresh conversation is told which PR it works on.
-  on('prompt.context', async ($, e, next) => {
-    if (!clearedUrl) return next(e)
-    const block = { name: 'pr-status', text: `Context of this agent is ${clearedUrl}` }
-    return next({ ...e, blocks: [...e.blocks.filter(b => b.name !== block.name), block] })
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {

@@ -1,6 +1,6 @@
 {
   "name": "pr-status",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Pane with the status of the PR this session works on (reviewers, open remarks, merge state, CI, merged/closed) and the session's context and cost, with author/reviewer actions",
   "author": {
     "name": "Ramon de Klein"

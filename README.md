@@ -45,7 +45,7 @@ Beside its title, **compact** runs `/compact` and **clear** runs `/clear`
 (press it twice within 5 seconds, as it drops the conversation). Both keep the
 pane on the same PR: after a clear, the fresh conversation takes over the PR
 the pane followed instead of reading its own opening, and a `/clear` you type
-does the same. The fresh conversation's context also tells Claude
+does the same. With the first prompt after the clear, Claude is also told
 `Context of this agent is <PR URL>`, so it knows which PR it works on.
 
 Below these figures it gives tips when they apply, based on what drives
